@@ -574,7 +574,15 @@ function getShipments() {
     const headers = data[0].map(h => String(h).trim());
     const colIdx = {};
     Object.entries(SHIP_COLS).forEach(([key, label]) => {
-      const i = headers.findIndex(h => h === label || h.includes(label.slice(0,8)));
+      let i;
+      if (key === 'po') {
+        // مطابقة مرنة لعمود P.O — قد يكون اسمه 'اودو' أو 'P.O ( odoo )' أو 'PO' حسب الشيت
+        i = headers.findIndex(h => h.includes('اودو'));
+        if (i < 0) i = headers.findIndex(h => h.toLowerCase().includes('odoo'));
+        if (i < 0) i = headers.findIndex(h => h.includes('P.O') || h.trim() === 'PO');
+      } else {
+        i = headers.findIndex(h => h === label || h.includes(label.slice(0,8)));
+      }
       if (i >= 0) colIdx[key] = i;
     });
     // Note column (varies by sheet)
@@ -935,6 +943,17 @@ function findColIdx(headers, needle){
   if(i>=0) return i;
   return headers.findIndex(h=>h.includes(needle.slice(0,8)));
 }
+// مطابقة عمود P.O مخصّصة وأكثر مرونة — يوجد أكثر من اسم محتمل للعمود عبر الشيتات
+// (اودو، P.O ( odoo )، PO، إلخ)، والاعتماد على تطابق نصي واحد فقط كان يُسقط
+// صفوف كاملة بصمت من أي شيت يستخدم تسمية مختلفة عن 'اودو'.
+function findPoColIdx(headers){
+  let i = headers.findIndex(h => h.includes('اودو'));
+  if (i >= 0) return i;
+  i = headers.findIndex(h => h.toLowerCase().includes('odoo'));
+  if (i >= 0) return i;
+  i = headers.findIndex(h => h.includes('P.O') || h.trim() === 'PO');
+  return i;
+}
 function detectSheetKind(headers){
   const hasPo = headers.some(h=>h.includes('اودو')||h.toLowerCase().includes('odoo')||h.includes('P.O')||h==='PO');
   const shipSignals = ['تاريخ الشحن','الشاحن','CONTAINERS','منفيست','LINE'].filter(s=>headers.some(h=>h.includes(s))).length;
@@ -947,7 +966,10 @@ function detectSheetKind(headers){
 }
 function parseShipmentSheet(headers, rows, sheetName){
   const colIdx={};
-  Object.entries(SHIP_COLS).forEach(([key,label])=>{ const i=findColIdx(headers,label); if(i>=0) colIdx[key]=i; });
+  Object.entries(SHIP_COLS).forEach(([key,label])=>{
+    const i = key === 'po' ? findPoColIdx(headers) : findColIdx(headers,label);
+    if(i>=0) colIdx[key]=i;
+  });
   const noteIdx = headers.findIndex(h=>h.includes('ملاحظة')||h.includes('ملاحظات'));
   const senderIdx = headers.findIndex(h=>h.toLowerCase().includes('sender bank')||h.includes('Bank'));
   const out=[];
