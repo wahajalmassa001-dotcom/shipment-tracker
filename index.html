@@ -258,6 +258,25 @@ td:last-child{border-left:none}
 .b-cxl{background:var(--rbg);color:var(--rose);border:1px solid rgba(244,85,110,.2)}.b-cxl::before{background:var(--rose)}
 .b-nil{color:var(--txt3);font-size:11px;font-weight:400}
 
+/* Results breakdown panel — يعكس النتائج المُفلترة حالياً */
+.bdwrap{display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:10px;padding:0 16px 12px}
+@media(max-width:900px){.bdwrap{grid-template-columns:1fr}}
+.bd-card{background:var(--s1);border:1px solid var(--brd);border-radius:var(--r);padding:10px 12px}
+.bd-title{font-size:9px;font-weight:800;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+.bd-split{height:8px;border-radius:5px;background:var(--s3);overflow:hidden}
+.bd-split-fill{height:100%;transition:width .4s ease}
+.bd-split-lbl{display:flex;justify-content:space-between;margin-top:6px;font-size:10px;font-weight:700}
+.bd-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.bd-row:last-child{margin-bottom:0}
+.bd-lbl{font-size:10px;color:var(--txt2);width:74px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bd-track{flex:1;height:6px;border-radius:4px;background:var(--s3);overflow:hidden}
+.bd-fill{height:100%;border-radius:4px;transition:width .4s ease}
+.bd-n{font-family:var(--mono);font-size:10px;color:var(--txt2);width:24px;text-align:left}
+.bd-chips{display:flex;flex-wrap:wrap;gap:6px}
+.bd-chip{font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px}
+.bd-chip b{font-family:var(--mono);font-weight:700}
+.bd-empty{font-size:10px;color:var(--txt3)}
+
 /* ══ EXPAND ══ */
 .er td{padding:0;background:var(--s2);border-bottom:2px solid var(--brd2)}
 .exp-inner{padding:16px 20px;border-top:2px solid var(--amber)}
@@ -474,6 +493,9 @@ html[data-theme="daylight"] ::-webkit-scrollbar-thumb{background:var(--brd3)}
   <span class="chip" id="cnt">—</span>
   <button class="reset-btn" onclick="resetAll()">✕ تصفير</button>
 </div>
+
+<!-- ══ RESULTS BREAKDOWN — يتحدث مع الفلاتر الحالية ══ -->
+<div class="bdwrap" id="bdwrap"></div>
 
 <!-- ══ TABLE ══ -->
 <div class="wrap">
@@ -791,6 +813,14 @@ const TC={id:'th-id',ship:'th-ship',bank:'th-bank'};
 // ══════════════════════════════════════════
 let DATA=[...BASELINE], filtered=[], page=1, ps=9999, sortIdx=0, sortDir=-1, expandedPO=null, autoTimer=null;
 
+// توزيع ألوان ثابت لكل قيمة (خط ملاحي، بنك...) — نفس القيمة = نفس اللون دائماً
+const HUE_CLASSES=['b-direct','b-part','b-done','b-pend','b-rev','b-cxl'];
+function hueClassFor(str){
+  const s=String(str||'');
+  let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0;
+  return HUE_CLASSES[h % HUE_CLASSES.length];
+}
+
 // ══════════════════════════════════════════
 //  THEMES
 // ══════════════════════════════════════════
@@ -883,6 +913,54 @@ function buildKPIs(){
     <div class="kp v">💳 لها حوالات <span class="n">${withT}</span></div>
     <div class="kp i">💸 متعدد الدفعات <span class="n">${multi}</span></div>
     <div class="kp g">💰 إجمالي <span class="n">$${fmtN(totalAmt)}</span></div>`;
+}
+
+// ══════════════════════════════════════════
+//  RESULTS BREAKDOWN — يعكس مجموعة النتائج المُفلترة حالياً (filtered)، وليس DATA كاملة
+// ══════════════════════════════════════════
+const MONTH_LBL={'01+02+03-2026':'يناير–مارس','04-2026':'أبريل','05-2026':'مايو','06-2026':'يونيو'};
+const MONTH_ORDER=['01+02+03-2026','04-2026','05-2026','06-2026'];
+function buildBreakdown(){
+  const el=document.getElementById('bdwrap'); if(!el) return;
+  const rows=filtered, total=rows.length||1;
+  const arr=rows.filter(r=>isArr(r.ata_baghdad)).length, pend=rows.length-arr;
+  const arrPct=(arr/total*100).toFixed(1);
+
+  const lineCounts={};
+  rows.forEach(r=>{ if(!r.line) return; lineCounts[r.line]=(lineCounts[r.line]||0)+1; });
+  const topLines=Object.entries(lineCounts).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const maxLine=topLines.length?topLines[0][1]:1;
+  const lineColorOf=l=>({'b-direct':'var(--teal)','b-part':'var(--gold)','b-done':'var(--green)','b-pend':'var(--orange)','b-rev':'var(--amber)','b-cxl':'var(--rose)'}[hueClassFor(l)]);
+
+  const monCounts={};
+  rows.forEach(r=>{ const m=r.month||''; if(!m) return; monCounts[m]=(monCounts[m]||0)+1; });
+
+  const statusHTML=`
+    <div class="bd-title">حالة الوصول</div>
+    <div class="bd-split"><div class="bd-split-fill" style="width:${arrPct}%;background:var(--arr)"></div></div>
+    <div class="bd-split-lbl">
+      <span style="color:var(--arr)">✅ وصلت ${arr}</span>
+      <span style="color:var(--txt3)">⏳ لم تصل ${pend}</span>
+    </div>`;
+
+  const linesHTML=topLines.length?topLines.map(([l,n])=>{
+    const pct=Math.max(6,(n/maxLine*100)).toFixed(0);
+    return `<div class="bd-row">
+      <span class="bd-lbl" title="${l}">${l.length>18?l.slice(0,18)+'…':l}</span>
+      <div class="bd-track"><div class="bd-fill" style="width:${pct}%;background:${lineColorOf(l)}"></div></div>
+      <span class="bd-n">${n}</span>
+    </div>`;
+  }).join(''):'<div class="bd-empty">لا توجد بيانات</div>';
+
+  const monthsHTML=MONTH_ORDER.filter(m=>monCounts[m]).map(m=>{
+    const c=lineColorOf(m);
+    return `<span class="bd-chip" style="background:color-mix(in srgb, ${c} 14%, transparent);color:${c}">${MONTH_LBL[m]||m} <b>${monCounts[m]}</b></span>`;
+  }).join('') || '<div class="bd-empty">لا توجد بيانات</div>';
+
+  el.innerHTML=`
+    <div class="bd-card">${statusHTML}</div>
+    <div class="bd-card"><div class="bd-title">أعلى الخطوط الملاحية</div>${linesHTML}</div>
+    <div class="bd-card"><div class="bd-title">توزيع الأشهر</div><div class="bd-chips">${monthsHTML}</div></div>`;
 }
 
 // ══════════════════════════════════════════
@@ -1183,6 +1261,7 @@ function applyFilters(){
     return String(av).localeCompare(String(bv),'ar')*sortDir;
   });
   document.getElementById('cnt').textContent=`${filtered.length} شحنة`;
+  buildBreakdown();
   renderTable();
 }
 function resetAll(){document.getElementById('sq').value='';['fLine','fShip','fMon','fAta','fBank','fInst'].forEach(id=>document.getElementById(id).value='');page=1;applyFilters();renderActivePills();}
@@ -1252,7 +1331,7 @@ function cellHTML(k,r){
     case 'manifest':inner=v?`<span style="font-family:var(--mono);font-size:11px;color:var(--sky)">${v}</span>`:'<span class="b-nil">—</span>';break;
     case 'warehouse_invoice':inner=v?`<span style="font-family:var(--mono);font-size:10px;color:var(--gold)">${v}</span>`:'<span class="b-nil">—</span>';break;
     case 'containers_no':inner=v?`<span style="font-family:var(--mono);font-size:9px;color:var(--txt2)">${v.slice(0,28)}${v.length>28?'…':''}</span>`:'<span class="b-nil">—</span>';break;
-    case 'line':inner=v?`<span class="badge b-direct" style="font-size:9px">${v}</span>`:'<span class="b-nil">—</span>';break;
+    case 'line':inner=v?`<span class="badge ${hueClassFor(v)}" style="font-size:9px">${v}</span>`:'<span class="b-nil">—</span>';break;
     case 'ship_date':case 'eta_expected':case 'eta_umqasr':case 'swift_latest':
       inner=v?`<span class="dt">${cleanD(v)}</span>`:'<span class="b-nil">—</span>';break;
     default:inner=v?`<span style="font-size:10px;color:var(--txt2)">${String(v).slice(0,25)}${String(v).length>25?'…':''}</span>`:'<span class="b-nil">—</span>';
