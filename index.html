@@ -811,7 +811,7 @@ const TC={id:'th-id',ship:'th-ship',bank:'th-bank'};
 // ══════════════════════════════════════════
 //  STATE
 // ══════════════════════════════════════════
-let DATA=[...BASELINE], filtered=[], page=1, ps=9999, sortIdx=0, sortDir=-1, expandedPO=null, autoTimer=null;
+let DATA=normalizeAndMergeData(BASELINE), filtered=[], page=1, ps=9999, sortIdx=0, sortDir=-1, expandedPO=null, autoTimer=null;
 
 // توزيع ألوان ثابت لكل قيمة (خط ملاحي، بنك...) — نفس القيمة = نفس اللون دائماً
 const HUE_CLASSES=['b-direct','b-part','b-done','b-pend','b-rev','b-cxl'];
@@ -978,7 +978,7 @@ async function doRefresh() {
     showProg(70);
     const json = await resp.json();
     if (json.error) throw new Error(json.error);
-    DATA = json;
+    DATA = normalizeAndMergeData(json);
     sanitizeShipmentDates(DATA);
     showProg(100);
     const now=new Date();
@@ -1052,10 +1052,11 @@ function parseShipmentSheet(headers, rows, sheetName){
   const senderIdx = headers.findIndex(h=>h.toLowerCase().includes('sender bank')||h.includes('Bank'));
   const out=[];
   rows.forEach(row=>{
-    const po = colIdx.po!==undefined ? String(row[colIdx.po]??'').trim() : '';
-    if(!po || !po.startsWith('P')) return;
+    const rawPo = colIdx.po!==undefined ? String(row[colIdx.po]??'').trim() : '';
+    if(!rawPo || !/^P/i.test(rawPo)) return;
+    const po = normPO(rawPo) || rawPo;
     const obj={ month: sheetName };
-    Object.entries(colIdx).forEach(([key,idx])=>{ obj[key]=String(row[idx]??'').trim(); });
+    Object.entries(colIdx).forEach(([key,idx])=>{ obj[key]=key==='po'?po:String(row[idx]??'').trim(); });
     if(noteIdx>=0) obj.notes=String(row[noteIdx]??'').trim();
     if(senderIdx>=0) obj.ship_bank=String(row[senderIdx]??'').trim();
     out.push(obj);
@@ -1076,8 +1077,9 @@ function parseTransferSheet(headers, rows, sheetName){
   const out=[];
   if(poIdx<0) return out;
   rows.forEach(row=>{
-    const po=String(row[poIdx]??'').replace(/\n/g,'').trim();
-    if(!po || !po.startsWith('P')) return;
+    const rawPo=String(row[poIdx]??'').replace(/\n/g,'').trim();
+    if(!rawPo || !/^P/i.test(rawPo)) return;
+    const po = normPO(rawPo) || rawPo;
     const amt=parseFloat(String(row[amtIdx]??'').replace(/[^0-9.]/g,''))||0;
     out.push({
       po, from_co: fromIdx>=0?String(row[fromIdx]??'').trim():'',
@@ -1123,6 +1125,7 @@ async function extractSheetsFromFile(file){
   return sheets;
 }
 function upsertShipment(po, patch){
+  po = normPO(po) || po;
   let entry = DATA.find(x=>x.po===po);
   if(!entry){
     entry = { po, all_banks:[], from_cos:[], transfer_total:0, swift_latest:'', installment_count:0, installments:false, transfers:[] };
@@ -1346,17 +1349,114 @@ function cellHTML(k,r){
 //  "Thu Feb 05 2026 11:03:00 GMT+0300 (Arabian Standard Time)"
 //  بدلاً من نص تاريخ بسيط — فتفشل isArr() في التعرف عليها كـ"وصلت".
 // ══════════════════════════════════════════
-const JSDATE_STR_RE = /^[A-Za-z]{3}\s[A-Za-z]{3}\s\d{1,2}\s\d{4}\s\d{2}:\d{2}:\d{2}/;
+// ══════════════════════════════════════════
+//  P.O NUMBER NORMALIZATION — الحل الجذري لمشكلة عدم ظهور بعض التحديثات:
+//  الملف لم يكن يطبّع أرقام الطلبات إطلاقاً؛ المطابقة كانت تتم بمساواة نصية
+//  صارمة (x.po===po). أي خطأ كتابي بسيط — وأشهره كتابة حرف O بدل الرقم 0
+//  (مثال حقيقي موجود في البيانات: "POO405" بدل "P00405") — كان يُنشئ سجلاً
+//  منفصلاً "يتيماً" لا يندمج أبداً مع سجل الطلب الصحيح، فتظهر آخر تحديثات
+//  الشحن/الحوالة في مكان منفصل لا يراه أحد. normPO() توحّد كل الاحتمالات
+//  (P/PO/POO + رقم، مسافات، حروف صغيرة) إلى صيغة واحدة قياسية P00000.
+// ══════════════════════════════════════════
+function normPO(raw){
+  if(!raw) return '';
+  let s=String(raw).trim().toUpperCase().replace(/\s+/g,'');
+  let m=s.match(/^P[O0]*(\d{3,})$/);
+  if(m) return 'P'+String(+m[1]).padStart(5,'0');
+  if(/^\d{3,}\+\d{3,}$/.test(s)) return s; // صيغة مركّبة مثل "447+446"
+  m=s.match(/P[O0]*(\d{3,})/);
+  if(m) return 'P'+String(+m[1]).padStart(5,'0');
+  return s; // غير معروف — يُعاد كما هو بدل فقدان السجل
+}
+// يطبّع po لكل سجل، ويدمج أي سجلات تلتقي على نفس رقم الطلب بعد التطبيع
+// (بدل أن يبقى أحدها يتيماً)، مع ملء الحقول الفارغة ودمج مصفوفات transfers.
+function normalizeAndMergeData(list){
+  const map = new Map();
+  const order = [];
+  (list||[]).forEach(rec=>{
+    const npo = normPO(rec.po) || rec.po;
+    if(!map.has(npo)){
+      map.set(npo, {...rec, po:npo});
+      order.push(npo);
+    } else {
+      const base = map.get(npo);
+      Object.entries(rec).forEach(([k,v])=>{
+        if(k==='po') return;
+        if(k==='transfers'){
+          const a=base.transfers||[], b=v||[];
+          const seen=new Set(a.map(t=>JSON.stringify(t)));
+          b.forEach(t=>{ const key=JSON.stringify(t); if(!seen.has(key)){ a.push(t); seen.add(key); } });
+          base.transfers=a;
+          return;
+        }
+        if(Array.isArray(v)){
+          base[k]=[...new Set([...(base[k]||[]), ...v])];
+          return;
+        }
+        const baseEmpty = base[k]===undefined||base[k]===null||base[k]==='';
+        if(baseEmpty && v!==undefined && v!==null && v!=='') base[k]=v;
+      });
+    }
+  });
+  return order.map(po=>map.get(po));
+}
+
 function isoLocalDate(d){ const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; }
+// ══════════════════════════════════════════
+//  DATE SANITIZATION — نسخة موسّعة (جذرية) تغطي كل الصيغ الخام المحتملة القادمة
+//  من Apps Script/Google Sheets وليس فقط صيغة JS Date.toString الواحدة:
+//  - كائن gviz "Date(2026,3,28)"
+//  - نص JS Date.toString الكامل "Sat Apr 28 2026 00:00:00 GMT+0300 (...)"
+//  - ISO مع أو بدون وقت "2026-04-28" / "2026-04-28T00:00:00.000Z"
+//  - dd/mm/yyyy، dd-mm-yyyy، dd.mm.yyyy
+//  - رقم تسلسلي إكسل (Excel serial date)
+//  - أسماء الأشهر الإنجليزية "Apr 28, 2026" / "28 Apr 2026"
+//  أي قيمة غير قابلة للتعرّف عليها كتاريخ (مثل "قيد التدقيق" أو "وصلت مخزن الشركة")
+//  تُعاد كما هي بدون تغيير حتى لا تُفقد ملاحظات الحالة النصية.
+// ══════════════════════════════════════════
 function normDateVal(v){
-  if(v==null) return v;
-  if(v instanceof Date && !isNaN(v)) return isoLocalDate(v);
-  const s=String(v).trim();
-  if(JSDATE_STR_RE.test(s)){
-    const d=new Date(s);
-    if(!isNaN(d)) return isoLocalDate(d);
+  if (v == null) return v;
+  if (v instanceof Date) return isNaN(v) ? v : isoLocalDate(v);
+
+  const s = String(v).trim();
+  if (!s || s === '0' || /^(NaT|nan|None)$/i.test(s)) return v;
+
+  const MO3 = {Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12};
+
+  let m = s.match(/^Date\((\d{4}),(\d{1,2}),(\d{1,2})/);
+  if (m) return m[1]+'-'+String(+m[2]+1).padStart(2,'0')+'-'+String(+m[3]).padStart(2,'0');
+
+  m = s.match(/^[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})/);
+  if (m) return m[3]+'-'+String(MO3[m[1]]||1).padStart(2,'0')+'-'+String(+m[2]).padStart(2,'0');
+
+  m = s.match(/^([A-Za-z]{3})[A-Za-z]*\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (m) return m[3]+'-'+String(MO3[m[1].slice(0,3)]||1).padStart(2,'0')+'-'+String(+m[2]).padStart(2,'0');
+
+  m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\s+(\d{4})$/);
+  if (m) return m[3]+'-'+String(MO3[m[2].slice(0,3)]||1).padStart(2,'0')+'-'+String(+m[1]).padStart(2,'0');
+
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0');
+
+  m = s.match(/^(\d{1,2})[\/\\](\d{1,2})[\/\\](\d{4})$/);
+  if (m) return m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+
+  m = s.match(/^(\d{1,2})[.\-](\d{1,2})[.\-](\d{2,4})$/);
+  if (m) {
+    const y = m[3].length===2 ? '20'+m[3] : m[3];
+    return y+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
   }
-  return v;
+
+  if (/^\d{4,6}(\.\d+)?$/.test(s)) {
+    const n = parseFloat(s);
+    if (n>20000 && n<60000) {
+      const epoch = new Date(Date.UTC(1899,11,30));
+      const dt = new Date(epoch.getTime()+n*86400000);
+      return dt.getUTCFullYear()+'-'+String(dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(dt.getUTCDate()).padStart(2,'0');
+    }
+  }
+
+  return v; // نص غير قابل للتعرّف عليه كتاريخ (ملاحظة حالة) — يُعاد كما هو
 }
 const DATE_FIELDS=['ship_date','eta_expected','eta_umqasr','ata_baghdad'];
 function sanitizeShipmentDates(list){
@@ -1476,7 +1576,7 @@ function buildTransTable(r){
       <td class="mo">${t.invoice_no||'—'}</td>
       <td class="${cx?'cx':'gr'}">$${fmtN(t.amount_num)}</td>
       <td class="mo">${cleanD(t.date)}</td>
-      <td class="mo" style="color:${cx?'var(--rose)':'var(--teal)'}">${t.receive_swift||'—'}</td>
+      <td class="mo" style="color:${cx?'var(--rose)':'var(--teal)'}">${cleanD(t.receive_swift)||'—'}</td>
       <td style="font-size:9px;color:var(--txt3)" title="${t.notes||''}">${(t.notes||'—').slice(0,28)}</td>
     </tr>`;}).join('')}</tbody></table></div>`;
 }
