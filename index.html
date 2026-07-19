@@ -989,7 +989,7 @@ async function doRefresh() {
   } catch(e) {
     setSyncState('err','خطأ في الاتصال');
     showToast('⚠ '+e.message.slice(0,60), 'err');
-    console.error(e);
+    console.error(e && e.message ? e.message : String(e));
   }
   btn.disabled=false; btn.classList.remove('spin');
   setTimeout(() => hideProg(), 700);
@@ -1207,7 +1207,7 @@ async function handleImportFile(evt){
     if(transOrphan>0) console.warn('حوالات بدون شحنة مطابقة لأرقام PO التالية:', [...orphanPOs]);
     if(unknownSheets>0) console.warn(unknownSheets+' ورقة/جدول لم يتم التعرف على نوعه (لا يحتوي أعمدة شحنات أو حوالات معروفة) وتم تجاهله.');
   }catch(err){
-    console.error(err);
+    console.error(err && err.message ? err.message : String(err));
     setSyncState('err','فشل الاستيراد');
     showToast('⚠ '+String(err.message||err).slice(0,80), 'err');
   }
